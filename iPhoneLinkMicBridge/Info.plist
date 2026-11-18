@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>iPhone Link Mic Bridge</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.iphone-link.mic-bridge</string>
+    <key>CFBundleName</key>
+    <string>iPhoneLinkMicBridge</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>iPhone Link uses the local network to receive the PC microphone stream.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>iPhone Link uses microphone access for the low-latency voice bridge.</string>
+    <key>NSMicrophoneInjectionUsageDescription</key>
+    <string>iPhone Link adds the PC microphone to supported voice calls.</string>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>audio</string>
+    </array>
+</dict>
+</plist>
