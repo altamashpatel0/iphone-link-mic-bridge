@@ -21,8 +21,6 @@ jobs:
 
       - name: Build iOS App
         run: |
-          cd ios-mic-bridge
-
           mkdir -p build
 
           xcodebuild \
@@ -37,8 +35,6 @@ jobs:
 
       - name: Create IPA
         run: |
-          cd ios-mic-bridge
-
           mkdir -p build/Payload
 
           cp -R \
@@ -53,4 +49,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: iPhoneLinkMicBridge-IPA
-          path: ios-mic-bridge/build/iPhoneLinkMicBridge-unsigned.ipa
+          path: build/iPhoneLinkMicBridge-unsigned.ipa
