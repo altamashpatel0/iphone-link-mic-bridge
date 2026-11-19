@@ -35,14 +35,46 @@ jobs:
 
       - name: Create IPA
         run: |
+          APP_PATH="build/iPhoneLinkMicBridge.xcarchive/Products/Applications/iPhoneLinkMicBridge.app"
+
+          echo "Checking app bundle..."
+          ls -la "$APP_PATH"
+
+          echo "Checking main executable..."
+          EXECUTABLE_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP_PATH/Info.plist" 2>/dev/null || true)
+
+          if [ -z "$EXECUTABLE_NAME" ]; then
+            echo "CFBundleExecutable is missing. Adding it..."
+            /usr/libexec/PlistBuddy               -c "Add :CFBundleExecutable string iPhoneLinkMicBridge"               "$APP_PATH/Info.plist"
+          else
+            echo "CFBundleExecutable already exists: $EXECUTABLE_NAME"
+          fi
+
+          EXECUTABLE_PATH="$APP_PATH/iPhoneLinkMicBridge"
+
+          if [ ! -f "$EXECUTABLE_PATH" ]; then
+            echo "ERROR: Main executable not found at $EXECUTABLE_PATH"
+            exit 1
+          fi
+
+          echo "Main executable found:"
+          ls -lh "$EXECUTABLE_PATH"
+
+          echo "Verifying CFBundleExecutable..."
+          /usr/libexec/PlistBuddy             -c "Print :CFBundleExecutable"             "$APP_PATH/Info.plist"
+
+          rm -rf build/Payload
           mkdir -p build/Payload
 
-          cp -R \
-            build/iPhoneLinkMicBridge.xcarchive/Products/Applications/iPhoneLinkMicBridge.app \
-            build/Payload/
+          cp -R "$APP_PATH" build/Payload/
 
           cd build
+          rm -f iPhoneLinkMicBridge-unsigned.ipa
           zip -r iPhoneLinkMicBridge-unsigned.ipa Payload
+
+      - name: Verify IPA
+        run: |
+          unzip -l build/iPhoneLinkMicBridge-unsigned.ipa | grep -E "Payload/iPhoneLinkMicBridge.app/(Info.plist|iPhoneLinkMicBridge)$"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
