@@ -4,13 +4,12 @@ import Network
 import Combine
 
 /// Receives 48 kHz mono PCM16 from the Windows host and exposes it as app audio.
-/// On iOS 18.2+, spoken-audio injection can add this app audio to supported calls.
 ///
-/// IMPORTANT:
-/// - This companion app does not modify the existing iPhone -> PC audio path.
-/// - It does not replace the iPhone's physical microphone.
-/// - UDP reception happens off the main thread; audio scheduling/state updates are
-///   marshalled onto the MainActor.
+/// On iOS 18.2+, spoken-audio microphone injection can add this app's audio
+/// to supported calling/VoIP apps when the user enables the required system
+/// setting and grants permission.
+///
+/// The existing iPhone -> PC audio path is not modified by this companion.
 @MainActor
 final class MicBridge: ObservableObject {
     @Published private(set) var connected = false
@@ -25,21 +24,23 @@ final class MicBridge: ObservableObject {
         label: "com.iphone-link.mic-bridge.network",
         qos: .userInteractive
     )
+
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: NWConnection] = [:]
 
     private let audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
+
     private let audioFormat = AVAudioFormat(
         commonFormat: .pcmFormatInt16,
         sampleRate: 48_000,
         channels: 1,
         interleaved: true
     )!
+
     private var audioConfigured = false
 
-    // Keep a small startup jitter buffer. 3 x 20 ms gives the network a little
-    // room without creating the large latency that an unbounded queue can cause.
+    // 3 x 20 ms gives a small startup cushion while keeping latency low.
     private let prebufferPacketCount = 3
     private var prebuffer: [AVAudioPCMBuffer] = []
     private var playbackStarted = false
@@ -63,8 +64,9 @@ final class MicBridge: ObservableObject {
         guard !audioConfigured else { return }
 
         let session = AVAudioSession.sharedInstance()
-        // Playback-only is intentional. The companion app must not take ownership
-        // of the physical iPhone microphone route.
+
+        // Playback-only is intentional. The companion app does not take
+        // ownership of the physical iPhone microphone route.
         try session.setCategory(
             .playback,
             mode: .default,
@@ -75,12 +77,18 @@ final class MicBridge: ObservableObject {
         try session.setActive(true, options: [])
 
         audioEngine.attach(playerNode)
-        audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: audioFormat)
+        audioEngine.connect(
+            playerNode,
+            to: audioEngine.mainMixerNode,
+            format: audioFormat
+        )
         audioEngine.mainMixerNode.outputVolume = 1.0
+
         try audioEngine.start()
 
         prebuffer.removeAll(keepingCapacity: true)
         playbackStarted = false
+
         playerNode.play()
         audioConfigured = true
         message = "Audio receiver ready"
@@ -89,6 +97,7 @@ final class MicBridge: ObservableObject {
     private func deactivateAudioPlayback() {
         prebuffer.removeAll(keepingCapacity: true)
         playbackStarted = false
+
         playerNode.stop()
         audioEngine.stop()
         audioEngine.reset()
@@ -100,16 +109,27 @@ final class MicBridge: ObservableObject {
     @available(iOS 18.2, *)
     private func observeMicrophoneInjectionAvailability() {
         let session = AVAudioSession.sharedInstance()
+
         injectionAvailable = session.isMicrophoneInjectionAvailable
         callActive = session.isMicrophoneInjectionAvailable
 
         Task { @MainActor [weak self] in
             guard let self else { return }
+
             for await notification in NotificationCenter.default.notifications(
                 named: AVAudioSession.microphoneInjectionCapabilitiesChangeNotification
             ) {
-                let available = notification.userInfo?
-                    [AVAudioSessionMicrophoneInjectionIsAvailableKey] as? Bool ?? false
+                // Avoid optional-dictionary boolean tests. Some SDK versions
+                // type userInfo as an optional dictionary.
+                let available: Bool
+                if let userInfo = notification.userInfo,
+                   let value = userInfo[
+                    AVAudioSessionMicrophoneInjectionIsAvailableKey
+                   ] as? Bool {
+                    available = value
+                } else {
+                    available = false
+                }
 
                 self.injectionAvailable = available
                 self.callActive = available
@@ -118,7 +138,8 @@ final class MicBridge: ObservableObject {
                     self.injectionEnabled = false
                     try? AVAudioSession.sharedInstance()
                         .setPreferredMicrophoneInjectionMode(.none)
-                    self.message = "Supported call ended; microphone injection disabled"
+                    self.message =
+                        "Supported call ended; microphone injection disabled"
                 }
             }
         }
@@ -130,25 +151,32 @@ final class MicBridge: ObservableObject {
             do {
                 try AVAudioSession.sharedInstance()
                     .setPreferredMicrophoneInjectionMode(.none)
+
                 injectionEnabled = false
                 message = callActive
                     ? "Injection off"
                     : "Injection off (no active supported call)"
             } catch {
-                message = "Could not disable injection: \(error.localizedDescription)"
+                message =
+                    "Could not disable injection: \(error.localizedDescription)"
             }
+
             return
         }
 
         // Apple's system-level Add Audio in Calls service must be enabled first.
-        let permission = AVAudioApplication.shared.microphoneInjectionPermission
+        let permission = AVAudioApplication.microphoneInjectionPermission
+
         switch permission {
         case .serviceDisabled:
             injectionEnabled = false
-            message = "Enable Settings → Accessibility → Audio & Visual → Add Audio in Calls"
+            message =
+                "Enable Settings → Accessibility → Audio & Visual → Add Audio in Calls"
 
         case .undetermined:
-            let result = await AVAudioApplication.requestMicrophoneInjectionPermission()
+            let result =
+                await AVAudioApplication.requestMicrophoneInjectionPermission()
+
             if result == .granted {
                 enableInjection()
             } else {
@@ -161,7 +189,8 @@ final class MicBridge: ObservableObject {
 
         case .denied:
             injectionEnabled = false
-            message = "Microphone injection permission denied; change it in Settings"
+            message =
+                "Microphone injection permission denied; change it in Settings"
 
         @unknown default:
             injectionEnabled = false
@@ -173,18 +202,21 @@ final class MicBridge: ObservableObject {
     private func enableInjection() {
         guard AVAudioSession.sharedInstance().isMicrophoneInjectionAvailable else {
             injectionEnabled = false
-            message = "No supported active call is available for microphone injection"
+            message =
+                "No supported active call is available for microphone injection"
             return
         }
 
         do {
             try AVAudioSession.sharedInstance()
                 .setPreferredMicrophoneInjectionMode(.spokenAudio)
+
             injectionEnabled = true
             message = "PC microphone injection ON"
         } catch {
             injectionEnabled = false
-            message = "Injection setup failed: \(error.localizedDescription)"
+            message =
+                "Injection setup failed: \(error.localizedDescription)"
         }
     }
 
@@ -210,17 +242,19 @@ final class MicBridge: ObservableObject {
             self.listener = listener
 
             listener.stateUpdateHandler = { [weak self] state in
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     guard let self else { return }
 
                     switch state {
                     case .ready:
                         self.connected = true
-                        self.message = "Listening for PC microphone on UDP \(port)"
+                        self.message =
+                            "Listening for PC microphone on UDP \(port)"
 
                     case .failed(let error):
                         self.connected = false
-                        self.message = "UDP listener failed: \(error.localizedDescription)"
+                        self.message =
+                            "UDP listener failed: \(error.localizedDescription)"
 
                     case .cancelled:
                         self.connected = false
@@ -232,23 +266,38 @@ final class MicBridge: ObservableObject {
             }
 
             listener.newConnectionHandler = { [weak self] connection in
-                guard let self else { return }
+                guard self != nil else { return }
 
-                let id = ObjectIdentifier(connection)
-                self.connections[id] = connection
+                // NWListener invokes this callback on the listener queue.
+                // Hop to MainActor before touching actor-isolated state.
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
 
-                connection.stateUpdateHandler = { [weak self, weak connection] state in
-                    guard let self, let connection else { return }
+                    let id = ObjectIdentifier(connection)
+                    self.connections[id] = connection
 
-                    if case .failed = state {
-                        Task { @MainActor in
-                            self.connections.removeValue(forKey: id)
+                    connection.stateUpdateHandler = { [weak self, weak connection] state in
+                        guard let connection else { return }
+
+                        if case .failed = state {
+                            Task { @MainActor [weak self] in
+                                self?.connections.removeValue(
+                                    forKey: ObjectIdentifier(connection)
+                                )
+                            }
                         }
                     }
-                }
 
-                connection.start(queue: self.networkQueue)
-                self.receiveLoop(connection, id: id)
+                    connection.start(queue: self.networkQueue)
+
+                    // The receive loop itself is nonisolated and only hops
+                    // back to MainActor when it needs to update app/audio state.
+                    MicBridge.receiveLoop(
+                        connection,
+                        id: id,
+                        owner: self
+                    )
+                }
             }
 
             listener.start(queue: networkQueue)
@@ -285,69 +334,100 @@ final class MicBridge: ObservableObject {
         message = "Receiver stopped"
     }
 
-    private func receiveLoop(_ connection: NWConnection, id: ObjectIdentifier) {
-        connection.receiveMessage { [weak self, weak connection] data, _, _, error in
-            guard let self, let connection else { return }
+    /// NWConnection's receive callback executes on the network queue.
+    /// This method is deliberately nonisolated so Swift 6 does not reject
+    /// the callback for crossing the MainActor boundary.
+    private nonisolated static func receiveLoop(
+        _ connection: NWConnection,
+        id: ObjectIdentifier,
+        owner: MicBridge
+    ) {
+        connection.receiveMessage { [weak connection, weak owner] data, _, _, error in
+            guard let connection else { return }
 
             if let error {
-                Task { @MainActor in
-                    self.message = "UDP receive error: \(error.localizedDescription)"
-                    self.connections.removeValue(forKey: id)
+                Task { @MainActor [weak owner] in
+                    guard let owner else { return }
+
+                    owner.message =
+                        "UDP receive error: \(error.localizedDescription)"
+                    owner.connections.removeValue(forKey: id)
                 }
                 return
             }
 
             if let data, !data.isEmpty {
-                // NWConnection invokes this callback on networkQueue. handlePacket()
-                // is MainActor-isolated, so explicitly hop to the MainActor.
-                Task { @MainActor [weak self] in
-                    self?.handlePacket(data)
+                Task { @MainActor [weak owner] in
+                    owner?.handlePacket(data)
                 }
             }
 
-            self.receiveLoop(connection, id: id)
+            // Continue receiving without touching MainActor-isolated state.
+            guard let owner else { return }
+
+            MicBridge.receiveLoop(
+                connection,
+                id: id,
+                owner: owner
+            )
         }
     }
 
     // MARK: - Packet handling
 
     private func handlePacket(_ data: Data) {
-        // Header: magic(4), version(1), channels(1), frames(2),
+        // Header:
+        // magic(4), version(1), channels(1), frames(2),
         // sampleRate(4), seq(4), timestamp(4)
         guard data.count >= 20 else { return }
-        guard data.prefix(4) == Data([0x56, 0x43, 0x4D, 0x31]) else { return }
-        guard data[4] == 1, data[5] == 1 else { return }
 
-        let frames = Int(UInt16(data[6]) << 8 | UInt16(data[7]))
+        guard data.prefix(4) == Data([0x56, 0x43, 0x4D, 0x31]) else {
+            return
+        }
+
+        guard data[4] == 1, data[5] == 1 else {
+            return
+        }
+
+        let frames =
+            Int(UInt16(data[6]) << 8 | UInt16(data[7]))
+
         let sampleRate =
             UInt32(data[8]) << 24 |
             UInt32(data[9]) << 16 |
             UInt32(data[10]) << 8 |
             UInt32(data[11])
+
         let sequence =
             UInt32(data[12]) << 24 |
             UInt32(data[13]) << 16 |
             UInt32(data[14]) << 8 |
             UInt32(data[15])
 
-        guard frames > 0, sampleRate == 48_000 else { return }
+        guard frames > 0, sampleRate == 48_000 else {
+            return
+        }
 
         let payload = data.dropFirst(20)
-        guard payload.count == frames * 2 else { return }
+        guard payload.count == frames * 2 else {
+            return
+        }
 
-        // UDP is ordered per flow, but packets can still be lost. When a forward
-        // sequence gap is detected, insert silence for each missing 20 ms packet
-        // so playback time does not collapse and drift earlier.
+        // UDP packets may be lost. Insert silence for forward sequence gaps
+        // so playback time does not collapse.
         if let expected = expectedSequence, sequence != expected {
             let gap = sequence &- expected
+
             if gap < 0x8000_0000 {
-                let boundedGap = min(gap, 50) // cap at 1 second of inserted silence
+                let boundedGap = min(gap, 50)
                 packetsDropped &+= UInt64(gap)
+
                 for _ in 0..<boundedGap {
                     scheduleSilence(frames: frames)
                 }
             }
         }
+
         expectedSequence = sequence &+ 1
         packetsReceived &+= 1
         lastPacketTime = Date()
@@ -358,11 +438,17 @@ final class MicBridge: ObservableObject {
         ) else {
             return
         }
+
         buffer.frameLength = AVAudioFrameCount(frames)
 
         payload.withUnsafeBytes { rawBuffer in
-            guard let source = rawBuffer.baseAddress,
-                  let destination = buffer.int16ChannelData?[0] else { return }
+            guard
+                let source = rawBuffer.baseAddress,
+                let destination = buffer.int16ChannelData?[0]
+            else {
+                return
+            }
+
             memcpy(destination, source, frames * 2)
         }
 
@@ -372,24 +458,36 @@ final class MicBridge: ObservableObject {
     private func scheduleAudioBuffer(_ buffer: AVAudioPCMBuffer) {
         guard audioConfigured else { return }
 
-        // Prebuffer only at startup. After playback starts, schedule each packet
-        // immediately so latency remains close to the network + 20 ms packet size.
+        // Prebuffer only during startup. After playback begins, each packet
+        // is scheduled immediately to keep latency low.
         if !playbackStarted {
             prebuffer.append(buffer)
-            guard prebuffer.count >= prebufferPacketCount else { return }
+
+            guard prebuffer.count >= prebufferPacketCount else {
+                return
+            }
 
             for item in prebuffer {
-                playerNode.scheduleBuffer(item, completionHandler: nil)
+                playerNode.scheduleBuffer(
+                    item,
+                    completionHandler: nil
+                )
             }
+
             prebuffer.removeAll(keepingCapacity: true)
             playbackStarted = true
+
             message = injectionEnabled
                 ? "Receiving PC microphone — injection ON"
                 : "Receiving PC microphone"
+
             return
         }
 
-        playerNode.scheduleBuffer(buffer, completionHandler: nil)
+        playerNode.scheduleBuffer(
+            buffer,
+            completionHandler: nil
+        )
     }
 
     private func scheduleSilence(frames: Int) {
@@ -398,7 +496,10 @@ final class MicBridge: ObservableObject {
         guard let silence = AVAudioPCMBuffer(
             pcmFormat: audioFormat,
             frameCapacity: AVAudioFrameCount(frames)
-        ) else { return }
+        ) else {
+            return
+        }
+
         silence.frameLength = AVAudioFrameCount(frames)
 
         if let channel = silence.int16ChannelData?[0] {
