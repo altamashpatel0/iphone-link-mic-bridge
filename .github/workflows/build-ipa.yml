@@ -1,0 +1,51 @@
+name: Build iPhone Mic Bridge IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+
+      - name: Build iOS App
+        run: |
+          mkdir -p build
+
+          xcodebuild \
+            -project iPhoneLinkMicBridge.xcodeproj \
+            -scheme iPhoneLinkMicBridge \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath build/iPhoneLinkMicBridge.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            archive
+
+      - name: Create IPA
+        run: |
+          mkdir -p build/Payload
+
+          cp -R \
+            build/iPhoneLinkMicBridge.xcarchive/Products/Applications/iPhoneLinkMicBridge.app \
+            build/Payload/
+
+          cd build
+          zip -r iPhoneLinkMicBridge-unsigned.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: iPhoneLinkMicBridge-IPA
+          path: build/iPhoneLinkMicBridge-unsigned.ipa
