@@ -165,7 +165,7 @@ final class MicBridge: ObservableObject {
         }
 
         // Apple's system-level Add Audio in Calls service must be enabled first.
-        let permission = AVAudioApplication.microphoneInjectionPermission
+        let permission = AVAudioApplication.shared.microphoneInjectionPermission
 
         switch permission {
         case .serviceDisabled:
